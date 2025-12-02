@@ -6,6 +6,46 @@ import os
 import glob
 import threading
 
+# ANSI color codes for terminal output
+class Colors:
+    """ANSI color codes for terminal output"""
+    RESET = '\033[0m'
+    BOLD = '\033[1m'
+    DIM = '\033[2m'
+    
+    # Text colors
+    BLACK = '\033[30m'
+    RED = '\033[31m'
+    GREEN = '\033[32m'
+    YELLOW = '\033[33m'
+    BLUE = '\033[34m'
+    MAGENTA = '\033[35m'
+    CYAN = '\033[36m'
+    WHITE = '\033[37m'
+    
+    # Bright colors
+    BRIGHT_BLACK = '\033[90m'
+    BRIGHT_RED = '\033[91m'
+    BRIGHT_GREEN = '\033[92m'
+    BRIGHT_YELLOW = '\033[93m'
+    BRIGHT_BLUE = '\033[94m'
+    BRIGHT_MAGENTA = '\033[95m'
+    BRIGHT_CYAN = '\033[96m'
+    BRIGHT_WHITE = '\033[97m'
+    
+    @staticmethod
+    def disable():
+        """Disable colors (for non-terminal output)"""
+        Colors.RESET = Colors.BOLD = Colors.DIM = ''
+        Colors.BLACK = Colors.RED = Colors.GREEN = Colors.YELLOW = ''
+        Colors.BLUE = Colors.MAGENTA = Colors.CYAN = Colors.WHITE = ''
+        Colors.BRIGHT_BLACK = Colors.BRIGHT_RED = Colors.BRIGHT_GREEN = Colors.BRIGHT_YELLOW = ''
+        Colors.BRIGHT_BLUE = Colors.BRIGHT_MAGENTA = Colors.BRIGHT_CYAN = Colors.BRIGHT_WHITE = ''
+
+# Disable colors if output is not a terminal
+if not sys.stdout.isatty():
+    Colors.disable()
+
 # Add venv to path if it exists
 script_dir = os.path.dirname(os.path.abspath(__file__))
 venv_lib = os.path.join(script_dir, '.venv', 'lib')
@@ -190,35 +230,49 @@ class BillValidator:
     
     @staticmethod
     def list_ports():
-        """List all available serial ports"""
-        print("Scanning for available serial ports...")
-        print("-" * 50)
+        """List all available serial ports in 80's terminal box style"""
+        box_width = 90
+        
+        header_text = "SERIAL PORTS"
+        header_len = len(header_text) + 4  # "╔═ " + text + " ═" = 3 + text + 2
+        print(f"{Colors.BOLD}{Colors.BLUE}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+        print(f"{Colors.BLUE}║{Colors.RESET} {Colors.DIM}Scanning for available serial ports...{Colors.RESET}")
         
         ports = serial.tools.list_ports.comports()
         
         if not ports:
-            print("No serial ports found.")
+            print(f"{Colors.BLUE}║{Colors.RESET} {Colors.RED}No serial ports found.{Colors.RESET}")
+            print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
             return []
         
+        print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
         port_list = []
         for idx, port_info in enumerate(ports):
-            print(f"  [{idx}] {port_info.device}")
+            print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}[{idx}]{Colors.RESET} {Colors.BRIGHT_BLUE}{port_info.device}{Colors.RESET}")
             if port_info.description:
-                print(f"      {port_info.description}")
+                print(f"{Colors.BLUE}║{Colors.RESET} {'':6s}{Colors.DIM}{port_info.description}{Colors.RESET}")
             port_list.append(port_info.device)
         
-        print("-" * 50)
+        print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
         return port_list
     
     @staticmethod
     def list_headers():
-        """List all header codes and their function names"""
-        print("Header Codes:")
-        print("-" * 50)
-        for code in sorted(BillValidator.HEADER_CODES.keys()):
-            name = BillValidator.HEADER_CODES[code]
-            print(f"  {code:3d} (0x{code:02X}): {name}")
-        print("-" * 50)
+        """List all header codes and their function names in 80's terminal box style"""
+        box_width = 90
+        
+        header_text = "HEADER CODES"
+        header_len = len(header_text) + 4  # "╔═ " + text + " ═" = 3 + text + 2
+        print(f"{Colors.BOLD}{Colors.BLUE}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+        
+        codes = sorted(BillValidator.HEADER_CODES.keys())
+        if codes:
+            print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
+            for code in codes:
+                name = BillValidator.HEADER_CODES[code]
+                print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{code:3d}{Colors.RESET} ({Colors.DIM}0x{code:02X}{Colors.RESET}) {Colors.BRIGHT_WHITE}{name}{Colors.RESET}")
+        
+        print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
         return BillValidator.HEADER_CODES
     
     def connect(self, port):
@@ -284,20 +338,41 @@ class BillValidator:
                         resp_data = resp_list[5:] if len(resp_list) > 5 else []
             
             if to_print:
-                print(f'Req: {header} {data}, Resp: {resp_header} [{resp_data}]', end="")
+                # Format request
+                header_name = BillValidator.HEADER_CODES.get(header, "Unknown")
+                req_str = f"{Colors.BLUE}→{Colors.RESET} {Colors.BOLD}Header{Colors.RESET} {Colors.BRIGHT_BLUE}{header}{Colors.RESET} ({Colors.DIM}0x{header:02X}{Colors.RESET}) - {Colors.DIM}{header_name}{Colors.RESET}"
+                if data:
+                    data_hex = " ".join([f"0x{x:02X}" for x in data])
+                    data_dec = " ".join([str(x) for x in data])
+                    req_str += f"\n  {Colors.DIM}Data:{Colors.RESET} [{Colors.BRIGHT_WHITE}{data_dec}{Colors.RESET}] ({Colors.DIM}{data_hex}{Colors.RESET})"
+                else:
+                    req_str += f"\n  {Colors.DIM}Data:{Colors.RESET} {Colors.DIM}[empty]{Colors.RESET}"
+                
+                # Format response
+                if resp_header is not None:
+                    resp_str = f"{Colors.BLUE}←{Colors.RESET} {Colors.BOLD}Response{Colors.RESET} {Colors.BRIGHT_BLUE}{resp_header}{Colors.RESET}"
+                    if resp_data:
+                        resp_hex = " ".join([f"0x{x:02X}" for x in resp_data])
+                        resp_dec = " ".join([str(x) for x in resp_data])
+                        resp_str += f"\n  {Colors.DIM}Data:{Colors.RESET} [{Colors.BRIGHT_WHITE}{resp_dec}{Colors.RESET}] ({Colors.DIM}{resp_hex}{Colors.RESET})"
+                    else:
+                        resp_str += f"\n  {Colors.DIM}Data:{Colors.RESET} {Colors.DIM}[empty]{Colors.RESET}"
+                else:
+                    resp_str = f"{Colors.RED}←{Colors.RESET} {Colors.BOLD}Response{Colors.RESET} {Colors.RED}None{Colors.RESET} {Colors.DIM}(no response received){Colors.RESET}"
                 
                 # Special handling for header 159 responses (check request header, not response header)
                 if header == 159:
                     counter, events = parse_header159_response(resp_data)
-                    print()
-                    print(f"Counter: {counter}")
-                    for event in events:
-                        print(f"  {event}")
+                    print(req_str)
+                    print(resp_str)
+                    print_header159_formatted(counter, events)
                 else:
-                    print("  ", end="")
+                    print(req_str)
+                    print(resp_str)
+                    # Show ASCII representation if available
                     str_ = self._ints_to_ascii(resp_data)
                     if str_:
-                        print(str_, end="  ")
+                        print(f"  {Colors.DIM}ASCII:{Colors.RESET} {Colors.BRIGHT_WHITE}{str_}{Colors.RESET}")
         
         if raw:
             print("   Raw:")
@@ -324,7 +399,7 @@ class BillValidator:
 
 
 def parse_header159_response(resp_data):
-    """Parse header 159 response and return human-readable descriptions"""
+    """Parse header 159 response and return structured event data"""
     if not resp_data or len(resp_data) < 1:
         return 0, []
     
@@ -374,35 +449,120 @@ def parse_header159_response(resp_data):
                             "Reject" if result_b in [2, 3] else \
                             "Fatal Error" if result_b in [6, 7, 13, 15, 16, 19] else \
                             "Fraud Attempt"
-            events.append(f"{event_category}: {event_type}")
+            events.append({
+                'category': event_category,
+                'type': event_type,
+                'a': result_a,
+                'b': result_b,
+                'pair': i + 1
+            })
         elif result_a >= 1 and result_a <= 255:
             if result_b == 0:
-                events.append(f"Credit: Bill type {result_a} validated correctly and sent to cashbox/stacker")
+                events.append({
+                    'category': 'Credit',
+                    'type': f'Bill type {result_a} validated correctly and sent to cashbox/stacker',
+                    'bill_type': result_a,
+                    'a': result_a,
+                    'b': result_b,
+                    'pair': i + 1
+                })
             elif result_b == 1:
-                events.append(f"Pending Credit: Bill type {result_a} validated correctly and held in escrow")
+                events.append({
+                    'category': 'Pending Credit',
+                    'type': f'Bill type {result_a} validated correctly and held in escrow',
+                    'bill_type': result_a,
+                    'a': result_a,
+                    'b': result_b,
+                    'pair': i + 1
+                })
             else:
-                events.append(f"Unknown: A={result_a}, B={result_b}")
+                events.append({
+                    'category': 'Unknown',
+                    'type': f'A={result_a}, B={result_b}',
+                    'a': result_a,
+                    'b': result_b,
+                    'pair': i + 1
+                })
         else:
-            events.append(f"Unknown: A={result_a}, B={result_b}")
+            events.append({
+                'category': 'Unknown',
+                'type': f'A={result_a}, B={result_b}',
+                'a': result_a,
+                'b': result_b,
+                'pair': i + 1
+            })
     
     return counter, events
 
 
+def print_header159_formatted(counter, events):
+    """Print header 159 response in 80's terminal box style"""
+    box_width = 90
+    
+    # Box header
+    header_text = "BILL EVENTS"
+    header_len = len(header_text) + 4  # "╔═ " + text + " ═" = 3 + text + 2
+    print(f"\n{Colors.BOLD}{Colors.BLUE}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}Counter:{Colors.RESET} {Colors.BRIGHT_BLUE}{counter:3d}{Colors.RESET} {Colors.DIM}(0x{counter:02X}){Colors.RESET}")
+    
+    if not events:
+        print(f"{Colors.BLUE}║{Colors.RESET} {Colors.DIM}No events{Colors.RESET}")
+    else:
+        # Print separator line
+        print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
+        
+        # Group events by category for better display
+        for event in events:
+            category = event['category']
+            event_type = event['type']
+            pair_num = event['pair']
+            
+            # Choose color based on category (no icons)
+            if category == 'Credit':
+                cat_color = Colors.GREEN
+            elif category == 'Pending Credit':
+                cat_color = Colors.YELLOW
+            elif category == 'Status':
+                cat_color = Colors.BLUE
+            elif category == 'Reject':
+                cat_color = Colors.YELLOW
+            elif category == 'Fatal Error':
+                cat_color = Colors.RED
+            elif category == 'Fraud Attempt':
+                cat_color = Colors.RED
+            else:
+                cat_color = Colors.DIM
+            
+            # Format the event line
+            pair_str = f"{Colors.DIM}Pair {pair_num}:{Colors.RESET}"
+            cat_str = f"{cat_color}{Colors.BOLD}{category:15s}{Colors.RESET}"
+            type_str = f"{Colors.BRIGHT_WHITE}{event_type}{Colors.RESET}"
+            
+            print(f"{Colors.BLUE}║{Colors.RESET} {pair_str} {cat_str} {type_str}")
+    
+    print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
+
+
 def print_help():
-    """Print help message"""
-    print("Available commands:")
-    print("  help              - Show this help message")
-    print("  list              - List all header codes and their function names")
-    print("  <header> [data]   - Send command (cmd keyword optional)")
-    print("                        Header and data values are decimal, space-separated")
-    print("                        Example: 254")
-    print("                        Example: 154 1")
-    print("                        Example: cmd 231 255 255")
-    print("  test              - Show available tests")
-    print("  test <name>       - Run a test")
-    print("  poll [period]     - Start polling command 159 every period ms (default: 1000ms)")
-    print("  stop              - Stop polling")
-    print("  quit, exit        - Exit the program")
+    """Print help message in 80's terminal box style"""
+    box_width = 90
+    cmd_width = 18  # Width for command names
+    
+    header_text = "COMMANDS"
+    header_len = len(header_text) + 5  # "╔═ " + text + " ═" = 3 + text + 2
+    print(f"{Colors.BOLD}{Colors.BLUE}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}help{Colors.RESET}{' ' * (cmd_width - 4)} - Show this help message")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}list{Colors.RESET}{' ' * (cmd_width - 4)} - List all header codes and their function names")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}<header> [data]{Colors.RESET}{' ' * (cmd_width - 15)} - Send command (cmd keyword optional)")
+    print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Header and data values are decimal, space-separated")
+    print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Example: {Colors.BRIGHT_WHITE}254{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Example: {Colors.BRIGHT_WHITE}154 1{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Example: {Colors.BRIGHT_WHITE}cmd 231 255 255{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}poll [period]{Colors.RESET}{' ' * (cmd_width - 13)} - Start polling command 159 every period ms")
+    print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   (default: 1000ms)")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}stop{Colors.RESET}{' ' * (cmd_width - 4)} - Stop polling")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}quit, exit{Colors.RESET}{' ' * (cmd_width - 10)} - Exit the program")
+    print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
     print()
 
 
@@ -449,14 +609,23 @@ def poll_worker(bv, period, stop_event, last_response_lock, last_response):
                 with last_response_lock:
                     if last_response[0] is None or last_response[0] != current_data:
                         # Response changed or first response
-                        # Print the response
+                        # Format and print the response
                         print()  # New line before printing
-                        print(f'Req: 159 [], Resp: {result.get("header", 0)} [{current_data}]', end="")
+                        header_name = BillValidator.HEADER_CODES.get(159, "Read buffered bill events")
+                        req_str = f"{Colors.BLUE}→{Colors.RESET} {Colors.BOLD}Header{Colors.RESET} {Colors.BRIGHT_BLUE}159{Colors.RESET} ({Colors.DIM}0x9F{Colors.RESET}) - {Colors.DIM}{header_name}{Colors.RESET}"
+                        req_str += f"\n  {Colors.DIM}Data:{Colors.RESET} {Colors.DIM}[empty]{Colors.RESET}"
+                        
+                        resp_header = result.get("header", 0)
+                        resp_hex = " ".join([f"0x{x:02X}" for x in current_data])
+                        resp_dec = " ".join([str(x) for x in current_data])
+                        resp_str = f"{Colors.BLUE}←{Colors.RESET} {Colors.BOLD}Response{Colors.RESET} {Colors.BRIGHT_BLUE}{resp_header}{Colors.RESET}"
+                        resp_str += f"\n  {Colors.DIM}Data:{Colors.RESET} [{Colors.BRIGHT_WHITE}{resp_dec}{Colors.RESET}] ({Colors.DIM}{resp_hex}{Colors.RESET})"
+                        
+                        print(req_str)
+                        print(resp_str)
+                        
                         counter, events = parse_header159_response(current_data)
-                        print()
-                        print(f"Counter: {counter}")
-                        for event in events:
-                            print(f"  {event}")
+                        print_header159_formatted(counter, events)
                         print()  # New line after printing
                         print("(polling) > ", end="", flush=True)  # Restore prompt (main loop is blocked on input())
                         
@@ -518,8 +687,10 @@ def parse_cmd(line, bv):
 def main():
     """Main function"""
     # List ports and connect at startup
-    print("ccTalk Host - Bill Validator Interface")
-    print("=" * 50)
+    box_width = 90
+    print(f"\n{Colors.BOLD}{Colors.BLUE}╔{'═' * box_width}{Colors.RESET}")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{Colors.BRIGHT_BLUE}ccTalk Host - Bill Validator Interface{Colors.RESET}")
+    print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}\n")
     
     port_list = BillValidator.list_ports()
     
@@ -551,7 +722,10 @@ def main():
         print("Failed to connect. Exiting.")
         sys.exit(1)
     
-    print("\nConnected! Type 'help' for available commands.\n")
+    box_width = 90
+    print(f"\n{Colors.GREEN}╔{'═' * box_width}{Colors.RESET}")
+    print(f"{Colors.GREEN}║{Colors.RESET} {Colors.BOLD}{Colors.BRIGHT_GREEN}Connected!{Colors.RESET} Type '{Colors.BRIGHT_BLUE}help{Colors.RESET}' for available commands.")
+    print(f"{Colors.GREEN}╚{'═' * box_width}{Colors.RESET}\n")
     
     # Polling state
     polling_thread = None
