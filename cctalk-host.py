@@ -5,6 +5,7 @@ import sys
 import os
 import glob
 import threading
+import argparse
 
 # ANSI color codes for terminal output
 class Colors:
@@ -136,12 +137,21 @@ class BillValidator:
         254: "Simple poll"
     }
     
-    def __init__(self, baudrate=9600, timeout=0.02):
-        """Initialize BillValidator instance"""
+    def __init__(self, baudrate=9600, timeout=0.02, checksum_mode='crc'):
+        """Initialize BillValidator instance
+        
+        Args:
+            baudrate: Serial baud rate (default: 9600)
+            timeout: Serial timeout in seconds (default: 0.02)
+            checksum_mode: 'crc' for 2-byte CRC (XModem) or 'checksum' for 1-byte checksum (default: 'crc')
+        """
         self.ser = None
         self.baudrate = baudrate
         self.timeout = timeout
         self.port = None
+        self.checksum_mode = checksum_mode.lower()
+        if self.checksum_mode not in ['crc', 'checksum']:
+            raise ValueError("checksum_mode must be 'crc' or 'checksum'")
     
     def _crc_calculate_xmodem(self, message):
         """Calculate XModem CRC for a message"""
@@ -153,28 +163,45 @@ class BillValidator:
         lsb = int(crc[-2:], 16)
         return msb, lsb
     
+    def _checksum_calculate(self, message):
+        """Calculate 8-bit checksum for a message
+        
+        The checksum byte is chosen such that the sum of all bytes (including checksum) is 0 mod 256.
+        Returns the checksum byte value to append.
+        """
+        total_sum = sum(message) & 0xFF
+        checksum = (256 - total_sum) & 0xFF
+        return checksum
+    
     def _add_crc(self, l):
-        """Add CRC to message (LSB at position 2, MSB at end)"""
-        msb, lsb = self._crc_calculate_xmodem(l)
-        l.insert(2, lsb)
-        l.append(msb)
+        """Add CRC or checksum to message
+        
+        CRC mode: LSB at position 2 (overwrites source address), MSB at end
+        Checksum mode: Single byte appended at end
+        """
+        if self.checksum_mode == 'crc':
+            msb, lsb = self._crc_calculate_xmodem(l)
+            l.insert(2, lsb)  # LSB overwrites position 2 (source address field)
+            l.append(msb)      # MSB at end
+        else:  # checksum mode
+            checksum = self._checksum_calculate(l)
+            l.append(checksum)  # Single byte at end
         return l
     
     def _remove_crc(self, data):
-        """Remove CRC from response and verify it
+        """Remove CRC or checksum from response and verify it
         
         CRC structure in ccTalk:
         - CRC LSB overwrites position 2 (source address field)
         - CRC MSB is at the end of the message
         - CRC is calculated on: [dest, len, header, data...] (after removing both CRC bytes)
         
-        Example: [1, 2, 116, 0, 31, 0, 84]
-        - Position 2 (116) = CRC LSB
-        - Position 6 (84) = CRC MSB
-        - CRC calculated on: [1, 2, 0, 31, 0]
+        Checksum structure:
+        - Single checksum byte appended at the end
+        - Checksum is calculated on: [dest, len, header, data...] (after removing checksum byte)
         
         Returns:
-            tuple: (data_without_crc, crc_valid) where crc_valid is True if CRC matches
+            tuple: (data_without_crc, crc_valid) where crc_valid is True if CRC/checksum matches
         """
         # Convert bytes to list of integers if needed
         if isinstance(data, bytes):
@@ -182,26 +209,47 @@ class BillValidator:
         else:
             l = list(data)
         
-        if len(l) < 5:
-            return (l, False)  # Too short to have CRC (need at least dest + len + crc_lsb + header + crc_msb)
+        if self.checksum_mode == 'crc':
+            if len(l) < 5:
+                return (l, False)  # Too short to have CRC (need at least dest + len + crc_lsb + header + crc_msb)
+            
+            # Extract CRC bytes: MSB from end, LSB from position 2
+            msb = l.pop(-1)  # Remove CRC MSB from end
+            lsb = l.pop(2)   # Remove CRC LSB from position 2 (overwrites source address)
+            
+            # Verify CRC: calculate on remaining bytes [dest, len, header, data...]
+            calculated_crc = self._crc_calculate_xmodem(l)
+            crc_valid = (calculated_crc == (msb, lsb))
+            
+            if not crc_valid:
+                print(f"CRC error for {data}: calculated {calculated_crc}, got ({msb}, {lsb})")
+                print(f"  Raw input (hex): {' '.join([f'{x:02X}' for x in data])}")
+                print(f"  Data being CRC-checked: {l}")
+                print(f"  Data being CRC-checked (hex): {' '.join([f'{x:02X}' for x in l])}")
+                print(f"  Calculated CRC: MSB={calculated_crc[0]} (0x{calculated_crc[0]:02X}), LSB={calculated_crc[1]} (0x{calculated_crc[1]:02X})")
+                print(f"  Received CRC: MSB={msb} (0x{msb:02X}), LSB={lsb} (0x{lsb:02X})")
+        else:  # checksum mode
+            if len(l) < 2:
+                return (l, False)  # Too short to have checksum (need at least dest + len + checksum)
+            
+            # Extract checksum byte from end
+            received_checksum = l.pop(-1)  # Remove checksum from end
+            
+            # Verify checksum: 
+            # Method 1: Calculate expected checksum and compare
+            calculated_checksum = self._checksum_calculate(l)
+            # Method 2: Verify sum of all bytes (including checksum) is 0 mod 256
+            total_sum = (sum(l) + received_checksum) & 0xFF
+            crc_valid = (calculated_checksum == received_checksum) and (total_sum == 0)
+            
+            if not crc_valid:
+                print(f"Checksum error for {data}: calculated {calculated_checksum} (0x{calculated_checksum:02X}), got {received_checksum} (0x{received_checksum:02X})")
+                print(f"  Total sum (including checksum): {total_sum} (should be 0)")
+                print(f"  Raw input (hex): {' '.join([f'{x:02X}' for x in data])}")
+                print(f"  Data being checksum-checked: {l}")
+                print(f"  Data being checksum-checked (hex): {' '.join([f'{x:02X}' for x in l])}")
         
-        # Extract CRC bytes: MSB from end, LSB from position 2
-        msb = l.pop(-1)  # Remove CRC MSB from end
-        lsb = l.pop(2)   # Remove CRC LSB from position 2 (overwrites source address)
-        
-        # Verify CRC: calculate on remaining bytes [dest, len, header, data...]
-        calculated_crc = self._crc_calculate_xmodem(l)
-        crc_valid = (calculated_crc == (msb, lsb))
-        
-        if not crc_valid:
-            print(f"CRC error for {data}: calculated {calculated_crc}, got ({msb}, {lsb})")
-            print(f"  Raw input (hex): {' '.join([f'{x:02X}' for x in data])}")
-            print(f"  Data being CRC-checked: {l}")
-            print(f"  Data being CRC-checked (hex): {' '.join([f'{x:02X}' for x in l])}")
-            print(f"  Calculated CRC: MSB={calculated_crc[0]} (0x{calculated_crc[0]:02X}), LSB={calculated_crc[1]} (0x{calculated_crc[1]:02X})")
-            print(f"  Received CRC: MSB={msb} (0x{msb:02X}), LSB={lsb} (0x{lsb:02X})")
-        
-        # Return message without CRC bytes and verification status: [dest, len, header, data...]
+        # Return message without CRC/checksum bytes and verification status: [dest, len, header, data...]
         return (l, crc_valid)
     
     def _ints_to_ascii(self, int_list):
@@ -571,8 +619,10 @@ def parse_test(line, bv):
     parts = line.split()
     if len(parts) < 2:
         print("Available tests:")
-        print("  add_crc    - Test CRC calculation by adding CRC to [1, 2, 0, 31, 0]")
-        print("  remove_crc - Test CRC removal from [1, 2, 116, 0, 31, 0, 84]")
+        print("  add_crc       - Test CRC calculation by adding CRC to [1, 2, 0, 31, 0]")
+        print("  remove_crc    - Test CRC removal from [1, 2, 116, 0, 31, 0, 84]")
+        print("  add_checksum  - Test checksum calculation by adding checksum to [40, 0, 1, 159]")
+        print("  remove_checksum - Test checksum removal from [40, 0, 1, 159, 56]")
         return
     
     subcommand = parts[1].lower()
@@ -590,9 +640,28 @@ def parse_test(line, bv):
         print(f"Input: {test_data}")
         print(f"Output: {result}")
         print(f"CRC: Calculated ({calc_msb}, {calc_lsb}) = Received ({received_msb}, {received_lsb}): {'✓' if crc_valid else '✗'}")
+    elif subcommand == 'add_checksum':
+        # Create temporary validator in checksum mode for this test
+        test_bv = BillValidator(checksum_mode='checksum')
+        test_data = [40, 0, 1, 159]
+        result = test_bv._add_crc(test_data.copy())
+        calculated_checksum = test_bv._checksum_calculate(test_data)
+        print(f"Input: {test_data}")
+        print(f"Output: {result}")
+        print(f"Checksum: Calculated {calculated_checksum} (0x{calculated_checksum:02X}), Added {result[-1]} (0x{result[-1]:02X}): {'✓' if calculated_checksum == result[-1] else '✗'}")
+    elif subcommand == 'remove_checksum':
+        # Create temporary validator in checksum mode for this test
+        test_bv = BillValidator(checksum_mode='checksum')
+        test_data = [40, 0, 1, 159, 56]
+        result, checksum_valid = test_bv._remove_crc(test_data.copy())
+        received_checksum = test_data[-1]
+        calculated_checksum = test_bv._checksum_calculate(result)
+        print(f"Input: {test_data}")
+        print(f"Output: {result}")
+        print(f"Checksum: Calculated {calculated_checksum} (0x{calculated_checksum:02X}) = Received {received_checksum} (0x{received_checksum:02X}): {'✓' if checksum_valid else '✗'}")
     else:
         print(f"Unknown test: {subcommand}")
-        print("Available tests: add_crc, remove_crc")
+        print("Available tests: add_crc, remove_crc, add_checksum, remove_checksum")
 
 
 def poll_worker(bv, period, stop_event, last_response_lock, last_response):
@@ -686,6 +755,31 @@ def parse_cmd(line, bv):
 
 def main():
     """Main function"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='ccTalk Host - Interactive command-line interface for Bill Validator communication',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s                          # Interactive mode (prompts for port and checksum mode)
+  %(prog)s --port /dev/ttyUSB0      # Use specific port, prompt for checksum mode
+  %(prog)s --port 3 --mode crc      # Use port index 3, use CRC mode
+  %(prog)s --port /dev/ttyUSB0 --mode checksum  # Use specific port, checksum mode
+        """
+    )
+    parser.add_argument(
+        '--port', '-p',
+        type=str,
+        help='Serial port (device path like /dev/ttyUSB0 or port index number)'
+    )
+    parser.add_argument(
+        '--mode', '-m',
+        choices=['crc', 'checksum'],
+        help='Checksum mode: "crc" for 2-byte CRC (XModem) or "checksum" for 1-byte checksum'
+    )
+    
+    args = parser.parse_args()
+    
     # List ports and connect at startup
     box_width = 90
     print(f"\n{Colors.BOLD}{Colors.BLUE}╔{'═' * box_width}{Colors.RESET}")
@@ -698,29 +792,74 @@ def main():
         print("No serial ports available. Exiting.")
         sys.exit(1)
     
-    # Prompt for port selection
-    while True:
+    # Determine port selection
+    selected_port = None
+    if args.port:
+        # Try to parse as port index first
         try:
-            selection = input("Select port number: ").strip()
-            if not selection:
-                continue
-            idx = int(selection)
+            idx = int(args.port)
             if 0 <= idx < len(port_list):
                 selected_port = port_list[idx]
-                break
             else:
-                print(f"Invalid selection. Please enter a number between 0 and {len(port_list)-1}")
+                print(f"Invalid port index {idx}. Please use a number between 0 and {len(port_list)-1}")
+                sys.exit(1)
         except ValueError:
-            print("Invalid input. Please enter a number.")
-        except KeyboardInterrupt:
-            print("\nExiting.")
-            sys.exit(0)
+            # Not a number, treat as device path
+            if args.port in port_list:
+                selected_port = args.port
+            else:
+                print(f"Port '{args.port}' not found in available ports.")
+                sys.exit(1)
+    else:
+        # Prompt for port selection
+        while True:
+            try:
+                selection = input("Select port number: ").strip()
+                if not selection:
+                    continue
+                idx = int(selection)
+                if 0 <= idx < len(port_list):
+                    selected_port = port_list[idx]
+                    break
+                else:
+                    print(f"Invalid selection. Please enter a number between 0 and {len(port_list)-1}")
+            except ValueError:
+                print("Invalid input. Please enter a number.")
+            except KeyboardInterrupt:
+                print("\nExiting.")
+                sys.exit(0)
+    
+    # Determine checksum mode
+    checksum_mode = args.mode
+    if not checksum_mode:
+        # Prompt for checksum mode
+        print(f"\n{Colors.BOLD}{Colors.BLUE}Checksum Mode Selection:{Colors.RESET}")
+        print("  [0] CRC (2-byte XModem CRC - LSB overwrites address field, MSB at end)")
+        print("  [1] Checksum (1-byte checksum - appended at end)")
+        while True:
+            try:
+                mode_selection = input("Select checksum mode [0/1]: ").strip()
+                if mode_selection == '0':
+                    checksum_mode = 'crc'
+                    break
+                elif mode_selection == '1':
+                    checksum_mode = 'checksum'
+                    break
+                else:
+                    print("Invalid selection. Please enter 0 for CRC or 1 for Checksum.")
+            except KeyboardInterrupt:
+                print("\nExiting.")
+                sys.exit(0)
     
     # Create validator instance and connect
-    bv = BillValidator()
+    bv = BillValidator(checksum_mode=checksum_mode)
     if not bv.connect(selected_port):
         print("Failed to connect. Exiting.")
         sys.exit(1)
+    
+    # Display selected mode
+    mode_display = "CRC (2-byte XModem)" if checksum_mode == 'crc' else "Checksum (1-byte)"
+    print(f"{Colors.DIM}Using {mode_display} mode{Colors.RESET}")
     
     box_width = 90
     print(f"\n{Colors.GREEN}╔{'═' * box_width}{Colors.RESET}")
