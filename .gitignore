@@ -1,7 +1,9 @@
-# Ignore everything except .py files
+# Ignore everything except .py files and documentation
 *
 
-# But track .py files
+# But track .py files and documentation
 !*.py
 !.gitignore
+!README.md
+!requirements.txt
 
