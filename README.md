@@ -1,16 +1,26 @@
-# ccTalk Host - Bill Validator Interface
+# ccTalk Host - Bill & Coin Validator Interface
 
-An interactive command-line interface for communicating with ccTalk-compatible bill validators via serial port. Support for both CRC and checksum validation modes.
+An interactive command-line interface for communicating with ccTalk-compatible bill validators and coin acceptors via serial port. Support for both CRC and checksum validation modes.
 
-A polling option will periodically poll the validator but will only show response if that is different from the previous response. During polling the user will have a normal prompt to 'inject' commands. Raw output and interpretation of the reponse is displayed. 
+A polling option will periodically poll the device and display interpreted event data (bill events or coin credits/errors) only when new events occur. During polling the user will have a normal prompt to 'inject' commands. Raw output and interpretation of the response is displayed. 
 
 ![ccTalk Host Interface](screenshot.jpeg)
+
+### Features
+
+- **Universal Support**: Works with Bill Validators (address 40) and Coin Acceptors (address 2).
+- **Keyboard History**: Use Up/Down arrows to navigate previous commands.
+- **Persistent History**: Commands are saved to `~/.cctalk_host_history`.
+- **Colored Output**: Rich ANSI color support for improved readability.
+- **Protocol Flexibility**: Supports both 2-byte CRC (XModem) and 1-byte Checksum modes.
+- **Improved Serial Handling**: Correct handling of echoed packets and binary data.
 
 ## Requirements
 
 - Python 3.6 or higher
-- pyserial library
-- A ccTalk-compatible bill validator connected via serial port
+- `pyserial` library
+- `readline` support (standard on macOS/Linux; Windows users may need `pyreadline3`)
+- A ccTalk-compatible device connected via serial port
 
 ## Installation
 
@@ -61,15 +71,19 @@ A polling option will periodically poll the validator but will only show respons
 ### Command-Line Options
 
 ```bash
-# Interactive mode (prompts for port and checksum mode)
+# Interactive mode (prompts for type, port, mode, etc.)
 python cctalk-host.py
 
-# Command line options for serial port and crc/checksum mode (both port and mode are required)
-python cctalk-host.py --port COM3 --mode crc         # Windows with CRC
-python cctalk-host.py --port /dev/ttyUSB0 --mode checksum  # Linux/Mac with checksum
+# Full command line example
+python cctalk-host.py --port /dev/ttyUSB0 --type bill --mode crc --address 40
 
-# Short options
-python cctalk-host.py -p COM3 -m crc
+# Options:
+#  -p, --port      Serial port device path or index number
+#  -t, --type      Device type: 'bill' or 'coin'
+#  -m, --mode      Checksum mode: 'crc' or 'checksum'
+#  -a, --address   Custom device address (default: 40 for bill, 2 for coin)
+#  --color         Force colored output
+#  --no-color      Disable colored output
 ```
 
 ### Interactive Commands
@@ -97,7 +111,9 @@ Once connected, you can use the following commands:
 
 #### Polling
 
-- `poll [period]` - Start polling command 159 every `period` milliseconds (default: 1000ms)
+- `poll [period]` - Start polling events every `period` milliseconds (default: 1000ms).
+  - Bill mode: Polls header **159** (Read buffered bill events)
+  - Coin mode: Polls header **229** (Read buffered credit or error codes)
 - `stop` - Stop polling
 
 **Examples:**
@@ -110,7 +126,7 @@ Once connected, you can use the following commands:
 While polling is active, the prompt changes to `(polling) >` and bill events are automatically displayed when they change.
 
 ## Note
-This script is developed on a bill validator with CRC option and no encryption. Not tested on checksum models. If you have a checksum model and do find issues, please let me know
+This script is designed to be compatible with a wide range of ccTalk devices. It has been specifically optimized for robustness (timing, echo handling) and user experience (history, colors).
 
 ## License
 

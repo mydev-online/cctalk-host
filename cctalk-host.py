@@ -7,44 +7,81 @@ import glob
 import threading
 import argparse
 
+try:
+    import readline
+    import atexit
+    # Enable persistent history
+    history_file = os.path.join(os.path.expanduser("~"), ".cctalk_host_history")
+    try:
+        if os.path.exists(history_file):
+            readline.read_history_file(history_file)
+        readline.set_history_length(1000)
+        
+        # macOS libedit support
+        if 'libedit' in getattr(readline, '__doc__', ''):
+            readline.parse_and_bind("bind ^[[A ed-prev-history")
+            readline.parse_and_bind("bind ^[[B ed-next-history")
+        
+        # Disable default word delimiters for better history handling of spaces
+        readline.set_completer_delims('')
+    except Exception:
+        pass
+    atexit.register(readline.write_history_file, history_file)
+except ImportError:
+    # Readline not available (e.g. on Windows without pyreadline)
+    pass
+
 # ANSI color codes for terminal output
 class Colors:
     """ANSI color codes for terminal output"""
-    RESET = '\033[0m'
-    BOLD = '\033[1m'
-    DIM = '\033[2m'
+    _ENABLED = True
     
-    # Text colors
-    BLACK = '\033[30m'
-    RED = '\033[31m'
-    GREEN = '\033[32m'
-    YELLOW = '\033[33m'
-    BLUE = '\033[34m'
-    MAGENTA = '\033[35m'
-    CYAN = '\033[36m'
-    WHITE = '\033[37m'
-    
-    # Bright colors
-    BRIGHT_BLACK = '\033[90m'
-    BRIGHT_RED = '\033[91m'
-    BRIGHT_GREEN = '\033[92m'
-    BRIGHT_YELLOW = '\033[93m'
-    BRIGHT_BLUE = '\033[94m'
-    BRIGHT_MAGENTA = '\033[95m'
-    BRIGHT_CYAN = '\033[96m'
-    BRIGHT_WHITE = '\033[97m'
-    
-    @staticmethod
-    def disable():
-        """Disable colors (for non-terminal output)"""
-        Colors.RESET = Colors.BOLD = Colors.DIM = ''
-        Colors.BLACK = Colors.RED = Colors.GREEN = Colors.YELLOW = ''
-        Colors.BLUE = Colors.MAGENTA = Colors.CYAN = Colors.WHITE = ''
-        Colors.BRIGHT_BLACK = Colors.BRIGHT_RED = Colors.BRIGHT_GREEN = Colors.BRIGHT_YELLOW = ''
-        Colors.BRIGHT_BLUE = Colors.BRIGHT_MAGENTA = Colors.BRIGHT_CYAN = Colors.BRIGHT_WHITE = ''
+    _CODES = {
+        'RESET': '\033[0m',
+        'BOLD': '\033[1m',
+        'DIM': '\033[2m',
+        'BLACK': '\033[30m',
+        'RED': '\033[31m',
+        'GREEN': '\033[32m',
+        'YELLOW': '\033[33m',
+        'BLUE': '\033[34m',
+        'MAGENTA': '\033[35m',
+        'CYAN': '\033[36m',
+        'WHITE': '\033[37m',
+        'BRIGHT_BLACK': '\033[90m',
+        'BRIGHT_RED': '\033[91m',
+        'BRIGHT_GREEN': '\033[92m',
+        'BRIGHT_YELLOW': '\033[93m',
+        'BRIGHT_BLUE': '\033[94m',
+        'BRIGHT_MAGENTA': '\033[95m',
+        'BRIGHT_CYAN': '\033[96m',
+        'BRIGHT_WHITE': '\033[97m',
+    }
 
-# Disable colors if output is not a terminal
-if not sys.stdout.isatty():
+    @classmethod
+    def enable(cls):
+        cls._ENABLED = True
+        for name, code in cls._CODES.items():
+            setattr(cls, name, code)
+
+    @classmethod
+    def disable(cls):
+        cls._ENABLED = False
+        for name in cls._CODES.keys():
+            setattr(cls, name, '')
+
+# Initialize attributes
+Colors.enable()
+
+# Determine if colors should be enabled
+def should_enable_colors():
+    if os.environ.get('FORCE_COLOR'):
+        return True
+    if os.environ.get('NO_COLOR'):
+        return False
+    return sys.stdout.isatty()
+
+if not should_enable_colors():
     Colors.disable()
 
 # Add venv to path if it exists
@@ -113,18 +150,24 @@ class BillValidator:
     HEADER_CODES = {
         1: "Reset Device",
         4: "Request comms revision",
-        152: "Request inhibit status",
-        154: "Route bill",
-        156: "Request country scaling factor",
-        159: "Read buffered bill events",
+        152: "[BILL] Request inhibit status",
+        154: "[BILL] Route bill",
+        155: "[BILL] Request bill position",
+        156: "[BILL] Request country scaling factor",
+        157: "[BILL] Request bill ID",
+        158: "[BILL] Modify bill ID",
+        159: "[BILL] Read buffered bill events",
         192: "Request build code",
         194: "Request database version",
         197: "Calculate ROM checksum",
+        209: "[COIN] Request sorter paths",
+        210: "[COIN] Modify sorter paths",
         213: "Request option flags",
         225: "Request accept counter",
         226: "Request insertion counter",
         227: "Request master inhibit status",
         228: "Modify master inhibit status",
+        229: "[COIN] Read buffered credit or error codes",
         230: "Request inhibit status",
         231: "Modify inhibit status",
         232: "Perform self-check",
@@ -137,18 +180,20 @@ class BillValidator:
         254: "Simple poll"
     }
     
-    def __init__(self, baudrate=9600, timeout=0.02, checksum_mode='crc'):
+    def __init__(self, baudrate=9600, timeout=0.2, checksum_mode='crc', address=40):
         """Initialize BillValidator instance
         
         Args:
             baudrate: Serial baud rate (default: 9600)
-            timeout: Serial timeout in seconds (default: 0.02)
+            timeout: Serial timeout in seconds (default: 0.2)
             checksum_mode: 'crc' for 2-byte CRC (XModem) or 'checksum' for 1-byte checksum (default: 'crc')
+            address: Device address (default: 40)
         """
         self.ser = None
         self.baudrate = baudrate
         self.timeout = timeout
         self.port = None
+        self.address = address
         self.checksum_mode = checksum_mode.lower()
         if self.checksum_mode not in ['crc', 'checksum']:
             raise ValueError("checksum_mode must be 'crc' or 'checksum'")
@@ -240,6 +285,12 @@ class BillValidator:
             calculated_checksum = self._checksum_calculate(l)
             # Method 2: Verify sum of all bytes (including checksum) is 0 mod 256
             total_sum = (sum(l) + received_checksum) & 0xFF
+            
+            # In checksum mode, ccTalk responses include Source at position 2.
+            # We pop it here to keep the return format consistent: [dest, len, header, data...]
+            if len(l) >= 3:
+                l.pop(2)
+                
             crc_valid = (calculated_checksum == received_checksum) and (total_sum == 0)
             
             if not crc_valid:
@@ -318,11 +369,81 @@ class BillValidator:
             print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
             for code in codes:
                 name = BillValidator.HEADER_CODES[code]
+                if "[BILL]" in name:
+                    name = name.replace("[BILL]", f"{Colors.BRIGHT_BLUE}[BILL]{Colors.RESET}")
+                elif "[COIN]" in name:
+                    name = name.replace("[COIN]", f"{Colors.BRIGHT_MAGENTA}[COIN]{Colors.RESET}")
+                
                 print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{code:3d}{Colors.RESET} ({Colors.DIM}0x{code:02X}{Colors.RESET}) {Colors.BRIGHT_WHITE}{name}{Colors.RESET}")
         
         print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
         return BillValidator.HEADER_CODES
     
+    def scan(self):
+        """Scan for devices on all addresses with both CRC and Checksum modes"""
+        if self.ser is None or not self.ser.is_open:
+            print("Not connected. Call connect() first.")
+            return
+        
+        box_width = 90
+        header_text = "DEVICE SCAN"
+        header_len = len(header_text) + 4
+        print(f"\n{Colors.BOLD}{Colors.YELLOW}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+        print(f"{Colors.YELLOW}║{Colors.RESET} Scanning addresses... Press Ctrl+C to abort.")
+        
+        # Priority addresses to check first
+        priority_addresses = [40, 2, 1]
+        other_addresses = [a for a in range(1, 256) if a not in priority_addresses]
+        all_addresses = priority_addresses + other_addresses
+        
+        found_devices = []
+        original_address = self.address
+        original_mode = self.checksum_mode
+        
+        try:
+            for addr in all_addresses:
+                self.address = addr
+                for mode in ['crc', 'checksum']:
+                    self.checksum_mode = mode
+                    # Use a very short timeout for scanning to speed up
+                    self.ser.timeout = 0.05
+                    
+                    # Send Simple Poll (header 254)
+                    res = self.cmd(254, to_print=False)
+                    
+                    if res is not None:
+                        # Found something!
+                        # Get manufacturer name (header 246)
+                        man_res = self.cmd(246, to_print=False)
+                        man_name = self._ints_to_ascii(man_res['data']) if (man_res and man_res.get('data')) else "Unknown"
+                        
+                        device_info = {
+                            'address': addr,
+                            'mode': mode,
+                            'manufacturer': man_name.strip()
+                        }
+                        found_devices.append(device_info)
+                        print(f"{Colors.YELLOW}║{Colors.RESET} {Colors.BRIGHT_GREEN}FOUND!{Colors.RESET} Addr: {Colors.BOLD}{addr:3d}{Colors.RESET}, Mode: {Colors.CYAN}{mode:8s}{Colors.RESET}, Mfg: {Colors.BRIGHT_WHITE}{man_name}{Colors.RESET}")
+                
+                # Show progress occasionally
+                if addr % 20 == 0:
+                    print(f"{Colors.YELLOW}║{Colors.RESET}   Progress: {addr/255*100:.1f}%...")
+                    
+        except KeyboardInterrupt:
+            print(f"\n{Colors.YELLOW}║{Colors.RESET} Scan aborted by user.")
+        
+        # Restore original settings
+        self.address = original_address
+        self.checksum_mode = original_mode
+        self.ser.timeout = self.timeout
+        
+        if not found_devices:
+            print(f"{Colors.YELLOW}║{Colors.RESET} {Colors.BRIGHT_RED}No devices responded.{Colors.RESET}")
+            print(f"{Colors.YELLOW}║{Colors.RESET} Check connection and power.")
+        
+        print(f"{Colors.YELLOW}╚{'═' * box_width}{Colors.RESET}\n")
+        return found_devices
+
     def connect(self, port):
         """Connect to a given serial port by name"""
         if port is None:
@@ -355,35 +476,57 @@ class BillValidator:
             data = [data]
         
         length = len(data)
-        msg = [40, length, header] + data
+        
+        if self.checksum_mode == 'crc':
+            msg = [self.address, length, header] + data
+        else:
+            msg = [self.address, length, 1, header] + data
+            
         req = self._add_crc(msg.copy())
         
-        self.ser.readline()  # Clear any pending data
+        # Clear buffer
+        self.ser.reset_input_buffer()
         self.ser.write(bytes(req))
-        resp = self.ser.readline()
+        
+        # ccTalk often echoes the request back
+        # Read the echo (if any) and then look for response
+        echo = self.ser.read(len(req))
+        
+        # Connection check: If we don't even hear our own echo, RX/TX might be disconnected
+        if len(echo) == 0 and to_print:
+            print(f"{Colors.BRIGHT_RED}Hardware Alert:{Colors.RESET} No loopback detected. Check RX/TX wiring and power.")
+        
+        # Read response: [dest, len, src/crc_lsb, header, data..., checksum/crc_msb]
+        # We read first 2 bytes to get the data length
+        dest_len = self.ser.read(2)
+        resp = b""
+        
+        if len(dest_len) == 2:
+            resp_data_len = dest_len[1]
+            # Total remaining in packet: source(1) + header(1) + data(N) + checksum(1)
+            # Both CRC and Checksum modes have 3 bytes overhead after [dest, len] + data
+            remaining = self.ser.read(resp_data_len + 3)
+            resp = dest_len + remaining
         
         resp_header = None
         resp_data = []
         
-        # Check if response is long enough: msg + 5 bytes minimum (dest + len + crc_lsb + header + crc_msb)
-        if len(resp) >= len(msg) + 5:
-            # Response may include echoed request, skip it
-            resp_part = resp[len(req):]
-            
-            # Response structure: [dest, len, crc_lsb, header, crc_msb, data...]
-            # After removing CRC: [dest, len, header, data...]
-            if len(resp_part) >= 5:
-                try:
-                    resp_trunc, crc_valid = self._remove_crc(resp_part)
-                    if len(resp_trunc) >= 3:
-                        resp_header = resp_trunc[2]  # Header is at position 2 after CRC removal
-                        resp_data = resp_trunc[3:] if len(resp_trunc) > 3 else []
-                except (IndexError, ValueError) as e:
-                    # If CRC removal fails, try to parse anyway
-                    resp_list = list(resp_part)
-                    if len(resp_list) >= 4:
-                        resp_header = resp_list[3]
-                        resp_data = resp_list[5:] if len(resp_list) > 5 else []
+        # Check if response is long enough: 5 bytes minimum
+        if len(resp) >= 5:
+            try:
+                # _remove_crc returns [dest, len, header, data...]
+                resp_trunc, crc_valid = self._remove_crc(resp)
+                if len(resp_trunc) >= 3:
+                    resp_header = resp_trunc[2]  # Header is at position 2
+                    resp_data = resp_trunc[3:] if len(resp_trunc) > 3 else []
+            except (IndexError, ValueError) as e:
+                # Fallback parsing
+                resp_list = list(resp)
+                if len(resp_list) >= 4:
+                    # In checksum mode: [1, len, 40, header, ...]
+                    # In CRC mode: [1, len, lsb, header, ...]
+                    resp_header = resp_list[3]
+                    resp_data = resp_list[4:-1]
             
             if to_print:
                 # Format request
@@ -408,12 +551,17 @@ class BillValidator:
                 else:
                     resp_str = f"{Colors.RED}←{Colors.RESET} {Colors.BOLD}Response{Colors.RESET} {Colors.RED}None{Colors.RESET} {Colors.DIM}(no response received){Colors.RESET}"
                 
-                # Special handling for header 159 responses (check request header, not response header)
+                # Special handling for event headers
                 if header == 159:
                     counter, events = parse_header159_response(resp_data)
                     print(req_str)
                     print(resp_str)
                     print_header159_formatted(counter, events)
+                elif header == 229:
+                    counter, events = parse_header229_response(resp_data)
+                    print(req_str)
+                    print(resp_str)
+                    print_header229_formatted(counter, events)
                 else:
                     print(req_str)
                     print(resp_str)
@@ -444,6 +592,99 @@ class BillValidator:
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit"""
         self.disconnect()
+
+
+def parse_header229_response(resp_data):
+    """Parse header 229 response (Coin Acceptor) and return structured event data"""
+    if not resp_data or len(resp_data) < 1:
+        return 0, []
+    
+    counter = resp_data[0]
+    events = []
+    
+    # Parse 5 A/B pairs (10 bytes after counter)
+    for i in range(5):
+        idx = 1 + (i * 2)
+        if idx + 1 < len(resp_data):
+            result_a = resp_data[idx]
+            result_b = resp_data[idx + 1]
+        else:
+            result_a = 0
+            result_b = 0
+        
+        if result_a == 0:
+            # Error/Status codes
+            event_map = {
+                0: "Null event",
+                1: "Reject coin",
+                2: "Invalid coin",
+                3: "Abandon coin",
+                4: "Inhibited coin",
+                5: "Full post-insertion inhibit",
+                6: "Sorter wall",
+                7: "Sorter path",
+                8: "Coin jam",
+                9: "Sorter jam",
+                10: "Sorter sensor",
+                11: "Sorter not ready",
+                12: "Sorter path error",
+                13: "Pay out jam",
+                14: "Pay out sensor",
+                15: "Pay out empty",
+                16: "Base sensor error",
+                17: "Year sensor error",
+                18: "Token teach error",
+                19: "Power fail",
+                20: "Authentication fail",
+                21: "Coin feeder jam",
+                22: "Coin feeder sensor error",
+                23: "Coin feeder empty",
+                24: "Coin feeder faulty",
+                255: "Unknown error"
+            }
+            event_type = event_map.get(result_b, f"Unknown coin event (B={result_b})")
+            event_category = "Status" if result_b in [0, 1, 4, 11] else \
+                            "Reject" if result_b in [2, 3] else "Error"
+            events.append({
+                'category': event_category,
+                'type': event_type,
+                'a': result_a,
+                'b': result_b,
+                'pair': i + 1
+            })
+        else:
+            # Result A > 0 means credit
+            events.append({
+                'category': 'Credit',
+                'type': f'Coin type {result_a} accepted (Sorter path {result_b})',
+                'coin_type': result_a,
+                'sorter_path': result_b,
+                'a': result_a,
+                'b': result_b,
+                'pair': i + 1
+            })
+    
+    return counter, events
+
+
+def print_header229_formatted(counter, events):
+    """Print header 229 response in 80's terminal box style"""
+    box_width = 90
+    header_text = "COIN EVENTS"
+    header_len = len(header_text) + 4
+    print(f"\n{Colors.BOLD}{Colors.MAGENTA}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
+    print(f"{Colors.MAGENTA}║{Colors.RESET} {Colors.BOLD}Counter:{Colors.RESET} {Colors.BRIGHT_MAGENTA}{counter:3d}{Colors.RESET} {Colors.DIM}(0x{counter:02X}){Colors.RESET}")
+    
+    if not events:
+        print(f"{Colors.MAGENTA}║{Colors.RESET} {Colors.DIM}No events{Colors.RESET}")
+    else:
+        print(f"{Colors.MAGENTA}╠{'═' * box_width}{Colors.RESET}")
+        for ev in events:
+            color = Colors.BRIGHT_GREEN if ev['category'] == 'Credit' else \
+                    Colors.BRIGHT_YELLOW if ev['category'] == 'Status' else Colors.BRIGHT_RED
+            print(f"{Colors.MAGENTA}║{Colors.RESET} {ev['pair']}. {color}{ev['category']:14s}{Colors.RESET} {ev['type']}")
+    
+    print(f"{Colors.MAGENTA}╚{'═' * box_width}{Colors.RESET}\n")
 
 
 def parse_header159_response(resp_data):
@@ -601,6 +842,7 @@ def print_help():
     print(f"{Colors.BOLD}{Colors.BLUE}╔═ {header_text} ═{'═' * (box_width - header_len)}{Colors.RESET}")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}help{Colors.RESET}{' ' * (cmd_width - 4)} - Show this help message")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}list{Colors.RESET}{' ' * (cmd_width - 4)} - List all header codes and their function names")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}scan{Colors.RESET}{' ' * (cmd_width - 4)} - Scan for devices (addresses 1-255, modes CRC/Checksum)")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}<header> [data]{Colors.RESET}{' ' * (cmd_width - 15)} - Send command (cmd keyword optional)")
     print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Header and data values are decimal, space-separated")
     print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Example: {Colors.BRIGHT_WHITE}254{Colors.RESET}")
@@ -664,12 +906,12 @@ def parse_test(line, bv):
         print("Available tests: add_crc, remove_crc, add_checksum, remove_checksum")
 
 
-def poll_worker(bv, period, stop_event, last_response_lock, last_response):
-    """Worker thread for polling command 159"""
+def poll_worker(bv, period, stop_event, last_response_lock, last_response, event_header=159):
+    """Worker thread for polling device events (159 for bill, 229 for coin)"""
     while not stop_event.is_set():
         try:
-            # Send command 159 silently
-            result = bv.cmd(159, [], to_print=False)
+            # Send command silently
+            result = bv.cmd(event_header, [], to_print=False)
             
             if result and result.get('data'):
                 current_data = result['data']
@@ -680,8 +922,8 @@ def poll_worker(bv, period, stop_event, last_response_lock, last_response):
                         # Response changed or first response
                         # Format and print the response
                         print()  # New line before printing
-                        header_name = BillValidator.HEADER_CODES.get(159, "Read buffered bill events")
-                        req_str = f"{Colors.BLUE}→{Colors.RESET} {Colors.BOLD}Header{Colors.RESET} {Colors.BRIGHT_BLUE}159{Colors.RESET} ({Colors.DIM}0x9F{Colors.RESET}) - {Colors.DIM}{header_name}{Colors.RESET}"
+                        header_name = BillValidator.HEADER_CODES.get(event_header, f"Header {event_header}")
+                        req_str = f"{Colors.BLUE}→{Colors.RESET} {Colors.BOLD}Header{Colors.RESET} {Colors.BRIGHT_BLUE}{event_header}{Colors.RESET} ({Colors.DIM}0x{event_header:02X}{Colors.RESET}) - {Colors.DIM}{header_name}{Colors.RESET}"
                         req_str += f"\n  {Colors.DIM}Data:{Colors.RESET} {Colors.DIM}[empty]{Colors.RESET}"
                         
                         resp_header = result.get("header", 0)
@@ -693,8 +935,13 @@ def poll_worker(bv, period, stop_event, last_response_lock, last_response):
                         print(req_str)
                         print(resp_str)
                         
-                        counter, events = parse_header159_response(current_data)
-                        print_header159_formatted(counter, events)
+                        if event_header == 159:
+                            counter, events = parse_header159_response(current_data)
+                            print_header159_formatted(counter, events)
+                        elif event_header == 229:
+                            counter, events = parse_header229_response(current_data)
+                            print_header229_formatted(counter, events)
+                            
                         print()  # New line after printing
                         print("(polling) > ", end="", flush=True)  # Restore prompt (main loop is blocked on input())
                         
@@ -777,8 +1024,35 @@ Examples:
         choices=['crc', 'checksum'],
         help='Checksum mode: "crc" for 2-byte CRC (XModem) or "checksum" for 1-byte checksum'
     )
+    parser.add_argument(
+        '--type', '-t',
+        choices=['bill', 'coin'],
+        help='Device type: "bill" for bill validator or "coin" for coin acceptor'
+    )
+    parser.add_argument(
+        '--address', '-a',
+        type=int,
+        default=40,
+        help='ccTalk device address (default: 40)'
+    )
+    parser.add_argument(
+        '--no-color',
+        action='store_true',
+        help='Disable colored output'
+    )
+    parser.add_argument(
+        '--force-color', '--color',
+        action='store_true',
+        help='Force colored output even if not in a terminal'
+    )
     
     args = parser.parse_args()
+
+    # Update color status based on arguments
+    if args.no_color:
+        Colors.disable()
+    elif args.force_color:
+        Colors.enable()
     
     # List ports and connect at startup
     box_width = 90
@@ -829,6 +1103,35 @@ Examples:
                 print("\nExiting.")
                 sys.exit(0)
     
+    # Determine device type
+    device_type = args.type
+    if not device_type:
+        print(f"\n{Colors.BOLD}{Colors.BLUE}Device Type Selection:{Colors.RESET}")
+        print("  [0] Bill Validator (default address: 40, event header: 159)")
+        print("  [1] Coin Acceptor  (default address: 2, event header: 229)")
+        while True:
+            try:
+                type_selection = input("Select device type [0/1]: ").strip()
+                if type_selection == '0':
+                    device_type = 'bill'
+                    break
+                elif type_selection == '1':
+                    device_type = 'coin'
+                    break
+                else:
+                    print("Invalid selection. Please enter 0 or 1.")
+            except KeyboardInterrupt:
+                print("\nExiting.")
+                sys.exit(0)
+    
+    # Set default address if not provided
+    address = args.address
+    if address == 40 and device_type == 'coin':
+        # Default changed if user didn't specify and selected coin
+        address = 2
+    
+    event_header = 159 if device_type == 'bill' else 229
+
     # Determine checksum mode
     checksum_mode = args.mode
     if not checksum_mode:
@@ -852,7 +1155,7 @@ Examples:
                 sys.exit(0)
     
     # Create validator instance and connect
-    bv = BillValidator(checksum_mode=checksum_mode)
+    bv = BillValidator(checksum_mode=checksum_mode, address=address)
     if not bv.connect(selected_port):
         print("Failed to connect. Exiting.")
         sys.exit(1)
@@ -877,12 +1180,27 @@ Examples:
         try:
             # Determine prompt based on polling status
             is_polling = polling_thread and polling_thread.is_alive()
-            prompt = "(polling) > " if is_polling else "> "
+            prompt = f"{Colors.BRIGHT_MAGENTA}(polling){Colors.RESET} > " if is_polling else f"{Colors.BRIGHT_GREEN}> {Colors.RESET}"
             
             line = input(prompt).strip()
             
             if not line:
                 continue
+            
+            # Add to history if readline is available and it's not a duplicate of the last entry
+            # Note: We don't need manual add_history if readline is working correctly, 
+            # but we keep it for environments where it's not automatic.
+            if 'readline' in sys.modules:
+                try:
+                    import readline
+                    # On some systems, input() adds to history automatically. 
+                    # To avoid duplicates, we check the last item.
+                    last_idx = readline.get_current_history_length()
+                    last_item = readline.get_history_item(last_idx) if last_idx > 0 else None
+                    if last_item != line:
+                        readline.add_history(line)
+                except Exception:
+                    pass
             
             parts = line.split()
             command = parts[0].lower()
@@ -906,6 +1224,8 @@ Examples:
                     print_help()
                 elif command == 'list':
                     BillValidator.list_headers()
+                elif command == 'scan':
+                    bv.scan()
                 elif command == 'cmd':
                     parse_cmd(line, bv)
                 elif command == 'test':
@@ -935,7 +1255,7 @@ Examples:
                     # Start polling thread
                     polling_thread = threading.Thread(
                         target=poll_worker,
-                        args=(bv, period, polling_stop_event, last_response_lock, last_response),
+                        args=(bv, period, polling_stop_event, last_response_lock, last_response, event_header),
                         daemon=True
                     )
                     polling_thread.start()
