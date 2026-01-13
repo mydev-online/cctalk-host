@@ -9,6 +9,8 @@ A polling option will periodically poll the device and display interpreted event
 ### Features
 
 - **Universal Support**: Works with Bill Validators (address 40) and Coin Acceptors (address 2).
+- **Device Scanning**: Automated search across all 255 addresses and both checksum modes.
+- **Hardware Diagnostics**: Real-time detection of missing loopback (RX/TX wiring/power issues).
 - **Keyboard History**: Use Up/Down arrows to navigate previous commands.
 - **Persistent History**: Commands are saved to `~/.cctalk_host_history`.
 - **Colored Output**: Rich ANSI color support for improved readability.
@@ -93,7 +95,8 @@ Once connected, you can use the following commands:
 #### Basic Commands
 
 - `help` - Show available commands
-- `list` - List all header codes and their function names
+- `list` - List all header codes and their function names (color-coded by device type)
+- `scan` - Blast search for any connected device (checks all addresses and modes)
 - `quit` / `exit` - Exit the program
 
 #### Sending Commands
@@ -124,6 +127,13 @@ Once connected, you can use the following commands:
 ```
 
 While polling is active, the prompt changes to `(polling) >` and bill events are automatically displayed when they change.
+
+### Hardware Diagnostics
+
+The tool automatically monitors the serial connection. If you send a command and the script doesn't detect its own echo (loopback), it will display:
+`Hardware Alert: No loopback detected. Check RX/TX wiring and power.`
+
+This is a clear indicator that the issue is physical (wiring, interface adapter, or device power) rather than a protocol mismatch.
 
 ## Note
 This script is designed to be compatible with a wide range of ccTalk devices. It has been specifically optimized for robustness (timing, echo handling) and user experience (history, colors).
