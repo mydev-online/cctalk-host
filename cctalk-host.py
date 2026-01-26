@@ -157,7 +157,12 @@ class BillValidator:
         157: "[BILL] Request bill ID",
         158: "[BILL] Modify bill ID",
         159: "[BILL] Read buffered bill events",
+        170: "[COIN] Request base filter",
+        183: "[COIN] Request term code",
+        184: "[COIN] Request coin ID",
+        188: "[COIN] Request default sorter path",
         192: "Request build code",
+        193: "Request software revision",
         194: "Request database version",
         197: "Calculate ROM checksum",
         209: "[COIN] Request sorter paths",
@@ -376,6 +381,20 @@ class BillValidator:
                 
                 print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{code:3d}{Colors.RESET} ({Colors.DIM}0x{code:02X}{Colors.RESET}) {Colors.BRIGHT_WHITE}{name}{Colors.RESET}")
         
+        # Add host commands section
+        print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
+        print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{Colors.BRIGHT_GREEN}HOST COMMANDS (Macros){Colors.RESET}")
+        print(f"{Colors.BLUE}╠{'═' * box_width}{Colors.RESET}")
+        host_cmds = [
+            ("enable", "Enable all channels and master inhibit (228+231)"),
+            ("status", "Check master and individual inhibit status (227+230)"),
+            ("poll", "Start event polling (159 or 229)"),
+            ("scan", "Scan bus for devices"),
+            ("help", "Show detailed help"),
+        ]
+        for cmd_name, desc in host_cmds:
+            print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}{cmd_name:10s}{Colors.RESET} - {Colors.DIM}{desc}{Colors.RESET}")
+            
         print(f"{Colors.BLUE}╚{'═' * box_width}{Colors.RESET}")
         return BillValidator.HEADER_CODES
     
@@ -843,6 +862,8 @@ def print_help():
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}help{Colors.RESET}{' ' * (cmd_width - 4)} - Show this help message")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}list{Colors.RESET}{' ' * (cmd_width - 4)} - List all header codes and their function names")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}scan{Colors.RESET}{' ' * (cmd_width - 4)} - Scan for devices (addresses 1-255, modes CRC/Checksum)")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}enable{Colors.RESET}{' ' * (cmd_width - 6)} - Enable all coin/bill channels and master inhibit")
+    print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}status{Colors.RESET}{' ' * (cmd_width - 6)} - Check current master and individual inhibit status")
     print(f"{Colors.BLUE}║{Colors.RESET} {Colors.BOLD}<header> [data]{Colors.RESET}{' ' * (cmd_width - 15)} - Send command (cmd keyword optional)")
     print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Header and data values are decimal, space-separated")
     print(f"{Colors.BLUE}║{Colors.RESET} {' ' * (cmd_width + 1)}   Example: {Colors.BRIGHT_WHITE}254{Colors.RESET}")
@@ -1226,6 +1247,17 @@ Examples:
                     BillValidator.list_headers()
                 elif command == 'scan':
                     bv.scan()
+                elif command == 'enable':
+                    # Enable all channels and master inhibit
+                    print(f"{Colors.BLUE}Enabling all channels...{Colors.RESET}")
+                    bv.cmd(228, [1])    # Master inhibit: 1 (Enabled)
+                    bv.cmd(231, [255, 255]) # Individual inhibits: all 16 channels enabled
+                    print(f"{Colors.GREEN}Done. Channels 1-16 and Master Inhibit are now enabled.{Colors.RESET}")
+                elif command == 'status':
+                    # Request current inhibit status
+                    print(f"{Colors.BLUE}Checking device status...{Colors.RESET}")
+                    bv.cmd(227) # Request master inhibit status
+                    bv.cmd(230) # Request inhibit status (channels 1-8 and 9-16)
                 elif command == 'cmd':
                     parse_cmd(line, bv)
                 elif command == 'test':
